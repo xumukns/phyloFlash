@@ -523,7 +523,6 @@ sub file_download {
         my ($table) = $te->tables;
         my $file_to_download = "";
         my $file_to_download_size = "";
-        my $file_to_download_md5 = "";
         my $license = "";
         # try to match the pattern
         for my $row ( $table->rows ) {
@@ -538,10 +537,6 @@ sub file_download {
                         $file_to_download_size = "";
                     }
                 }
-                # try downloading md5
-                $file_to_download_md5 = get_content_over_agent($ua, $url_base.$file_to_download.".md5");
-                $file_to_download_md5 =~ s/ .*//;
-                chomp($file_to_download_md5);
                 msg("  Found $file_to_download ($file_to_download_size)");
             }elsif( @$row[1] eq "LICENSE.txt" ){
                 $license = get_content_over_agent($ua, $url_base."LICENSE.txt");
@@ -550,6 +545,16 @@ sub file_download {
         }
         err("No files found?!")
             if($file_to_download eq "");
+        my $file_to_download_md5 = "";
+        for my $row ( $table->rows ) {
+            if($file_to_download.".md5" eq @$row[1])){
+                # try downloading md5
+                $file_to_download_md5 = get_content_over_agent($ua, $url_base.$file_to_download.".md5");
+                $file_to_download_md5 =~ s/ .*//;
+                chomp($file_to_download_md5);
+                last;
+            }
+        }
         if(-f $file_to_download){ # file exists
             msg("  Found existing $file_to_download");
             if ($file_to_download_md5 eq "") {
@@ -700,7 +705,7 @@ sub get_content_over_agent { # Added by Dr.Sergey Noskov ZDV University of Mainz
     my ($ua, $url) = (@_);
     my $response = $ua->get($url) 
         or die 'Unable to get page '.$url;
-    die $response->status_line if !$response->is_success;
+    die $response->status_line." ".$url if !$response->is_success;
     return $response->decoded_content( charset => 'none' );
 }
 
