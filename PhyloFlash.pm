@@ -475,6 +475,10 @@ Returns the name of the downloaded file.
 
 =over 3
 
+=item-
+
+Check whether a proxy env variable is set and choose coresponding method
+
 =item -
 
 Compares byte sizes before and after download.
@@ -495,113 +499,217 @@ file also contains a file named LICENSE.txt.
 =back
 
 =cut
+
+use LWP::UserAgent;
+use lib ".";
+use HTML::TableExtract;
+use Text::Glob qw( match_glob glob_to_regex );
+use Scalar::Util qw(looks_like_number);
+
+
 sub file_download {
     my ($server,$path,$pat) = ($_[0] =~ /([^\/]*)(\/.*\/)([^\/]*)/);
 
-    msg("  Connecting to $server");
-    my $ftp = new Net::FTP($server,(
-                               Passive => 1,
-                               Debug => 0,
-                               Timeout => 600
-                           ))
-        or err("Could not connect to $server");
-    $ftp->login("anonymous", "-phyloFlash")
-        or err("Could not login to $server:", $ftp->message);
-    $ftp->binary();
-    $ftp->pasv();
-
-    msg("  Finding $path$pat");
-    $ftp->cwd($path)
-        or err("Could not enter path '\$path\': ", $ftp->message);
-    my $files = $ftp->ls($pat)
-        or err("Could not list files matching \'$pat'\ in \'$path\': ",
-               $ftp->message);
-    err("No files found?!")
-        if (@$files == 0);
-    msg("  Multiple files found?! Using first of ".join(@$files))
-        if (@$files > 1);
-    my $file = shift(@$files);
-    my $file_size = $ftp->size($file)
-        or err("Could not get file size:", $ftp->message);
-    msg("  Found $file ($file_size bytes)");
-
-    # try downloading md5
-    my $file_md5 = ftp_read_var($ftp, $file.".md5");
-    $file_md5 =~ s/ .*//;
-    chomp($file_md5);
-
-    # compare with potentially existing file
-    if (-e $file) { # file exists
-        msg("  Found existing $file");
-        if (-s $file == $file_size) { # and has same size
-            if ($file_md5 eq "") {
-                msg("Sizes match. Skipping download");
-                return $file;
+    if(defined $ENV{'FTP_PROXY'} || defined $ENV{'ftp_proxy'}){# Added by Dr.Sergey Noskov ZDV University of Mainz
+        my $url_base = "ftp://".$server.$path;
+        my $ua = LWP::UserAgent->new();
+        $ua->env_proxy;
+        say "  Connecting to $server using proxy"; 
+        # get directory list as HTML
+        my $dir_res = get_content_over_agent($ua, $url_base);
+        # parse HTML table
+        my $te = HTML::TableExtract->new();
+        $te->parse($dir_res);
+        my ($table) = $te->tables;
+        my $file_to_download = "";
+        my $file_to_download_size = "";
+        my $file_to_download_md5 = "";
+        my $license = "";
+        # try to match the pattern
+        for my $row ( $table->rows ) {
+            #print join("\n",map { defined ? $_ : '' } @$row);
+            if(match_glob($pat, @$row[1]) && $file_to_download eq ""){
+                #die "Could not get file size" if !defined(@$row[-2]);
+                $file_to_download = @$row[1];
+                if(defined(@$row[-2])){
+                    $file_to_download_size = @$row[-2];
+                    $file_to_download_size =~ s/ //g;
+                    if(!looks_like_number(substr( $file_to_download_size, 0, 1 ))){
+                        $file_to_download_size = "";
+                    }
+                }
+                # try downloading md5
+                $file_to_download_md5 = get_content_over_agent($ua, $url_base.$file_to_download.".md5");
+                $file_to_download_md5 =~ s/ .*//;
+                chomp($file_to_download_md5);
+                msg("  Found $file_to_download ($file_to_download_size)");
+            }elsif( @$row[1] eq "LICENSE.txt" ){
+                $license = get_content_over_agent($ua, $url_base."LICENSE.txt");
+            }
+            last if(!($license eq "" || $file_to_download eq ""));
+        }
+        err("No files found?!")
+            if($file_to_download eq "");
+        if(-f $file_to_download){ # file exists
+            msg("  Found existing $file_to_download");
+            if ($file_to_download_md5 eq "") {
+                msg("MD5 sum is not available. Skipping download");
+                return $file_to_download;
             }
             msg("  Verifying MD5...");
-            my $local_md5 = file_md5($file);
-            if ($file_md5 eq $local_md5) { # and has same md5
-                msg("  Verified. Skipping download");
-                return $file;
+            my $local_md5 = file_md5($file_to_download);
+            if ($file_to_download_md5 eq $local_md5) { # and has same md5
+                msg("  Verified. MD5 sum match. Skipping download");
+                return $file_to_download;
             } else { # md5 mismatch
-                msg("  MD5 sum mismatch: '$file_md5' != '$local_md5'");
+                msg("  MD5 sum mismatch: '$file_to_download_md5' != '$local_md5'");
             }
-        } else {
-            msg("  Size mismatch: ".$file_size." != ". -s $file);
+            #if (-s $file_to_download == $file_to_download_size) { # and has same size
+                
+            #} else {
+            #    msg("  Size mismatch: ".$file_to_download_size." != ". -s $file_to_download);
+            #}
+            msg("  -> re-downloading");
         }
-        msg("  -> re-downloading");
-    }
 
-    # verify license
+        # verify license
 
-    my $license = ftp_read_var($ftp, "LICENSE.txt");
-    if (!$license eq "") {
-        msg("The file you are about to download comes with a license:\n\n\n"
-            .$license."\n\n");
-        msg("Do you wish to continue downloading under the conditions");
-        msg("specified above? [yes/no]: ");
-        my $accept;
-        while (<>) {
-            chomp;
-            if ($_ eq "yes") {
-                $accept = 1;
-                last;
-            } elsif ($_ eq "no") {
-                $accept = 0;
-                last;
+        if(!$license eq ""){
+            msg("The file you are about to download comes with a license:\n\n\n"
+                .$license."\n\n");
+            accept_license();
+        }
+
+        # download file
+        get_file_over_agent($ua, $url_base.$file_to_download, $file_to_download);
+        return $file_to_download;
+    }else{
+        
+        msg("  Connecting to $server");
+        my $ftp = new Net::FTP($server,(
+                                Passive => 1,
+                                Debug => 0,
+                                Timeout => 600
+                            ))
+            or err("Could not connect to $server");
+        $ftp->login("anonymous", "-phyloFlash")
+            or err("Could not login to $server:", $ftp->message);
+        $ftp->binary();
+        $ftp->pasv();
+
+        msg("  Finding $path$pat");
+        $ftp->cwd($path)
+            or err("Could not enter path '\$path\': ", $ftp->message);
+        my $files = $ftp->ls($pat)
+            or err("Could not list files matching \'$pat'\ in \'$path\': ",
+                $ftp->message);
+        err("No files found?!")
+            if (@$files == 0);
+        msg("  Multiple files found?! Using first of ".join(@$files))
+            if (@$files > 1);
+        my $file = shift(@$files);
+        my $file_size = $ftp->size($file)
+            or err("Could not get file size:", $ftp->message);
+        msg("  Found $file ($file_size bytes)");
+
+        # try downloading md5
+        my $file_md5 = ftp_read_var($ftp, $file.".md5");
+        $file_md5 =~ s/ .*//;
+        chomp($file_md5);
+
+        # compare with potentially existing file
+        if (-e $file) { # file exists
+            msg("  Found existing $file");
+            if (-s $file == $file_size) { # and has same size
+                if ($file_md5 eq "") {
+                    msg("Sizes match. Skipping download");
+                    return $file;
+                }
+                msg("  Verifying MD5...");
+                my $local_md5 = file_md5($file);
+                if ($file_md5 eq $local_md5) { # and has same md5
+                    msg("  Verified. Skipping download");
+                    return $file;
+                } else { # md5 mismatch
+                    msg("  MD5 sum mismatch: '$file_md5' != '$local_md5'");
+                }
             } else {
-                msg("[yes/no]: ");
+                msg("  Size mismatch: ".$file_size." != ". -s $file);
             }
+            msg("  -> re-downloading");
         }
-        if ($accept == 0) {
-            msg("Ok. Goodbye...");
-            exit(0);
+
+        # verify license
+
+        my $license = ftp_read_var($ftp, "LICENSE.txt");
+        if (!$license eq "") {
+            msg("The file you are about to download comes with a license:\n\n\n"
+                .$license."\n\n");
+            accept_license();
         }
+
+        # download file
+        print STDERR "|" . "-" x 75 . "|\n";
+        $ftp->hash(\*STDERR, $ftp->size($file)/76);
+        $ftp->get($file)
+            or err("Failed to download $file:", $ftp->message);
+        print STDERR "\n";
+
+        err("File size mismatch?!")
+            if (-s $file != $file_size);
+
+        if ($file_md5 eq "") { # had no md5
+            return $file;
+        }
+
+        msg("  Verifying MD5...");
+        my $local_md5 = file_md5($file);
+        if ($local_md5 eq $file_md5) {
+            msg("File ok");
+            return $file;
+        }
+
+        err("  MD5 sum mismatch: '$file_md5' != '$local_md5'");
     }
-
-    # download file
-    print STDERR "|" . "-" x 75 . "|\n";
-    $ftp->hash(\*STDERR, $ftp->size($file)/76);
-    $ftp->get($file)
-        or err("Failed to download $file:", $ftp->message);
-    print STDERR "\n";
-
-    err("File size mismatch?!")
-        if (-s $file != $file_size);
-
-    if ($file_md5 eq "") { # had no md5
-        return $file;
-    }
-
-    msg("  Verifying MD5...");
-    my $local_md5 = file_md5($file);
-    if ($local_md5 eq $file_md5) {
-        msg("File ok");
-        return $file;
-    }
-
-    err("  MD5 sum mismatch: '$file_md5' != '$local_md5'");
+    
 }
+
+sub accept_license { # Added by Dr.Sergey Noskov ZDV University of Mainz
+    msg("Do you wish to continue downloading under the conditions");
+    msg("specified above? [yes/no]: ");
+    my $accept;
+    while (<>) {
+        chomp;
+        if ($_ eq "yes") {
+            $accept = 1;
+            last;
+        } elsif ($_ eq "no") {
+            $accept = 0;
+            last;
+        } else {
+            msg("[yes/no]: ");
+        }
+    }
+    if ($accept == 0) {
+        msg("Ok. Goodbye...");
+        exit(0);
+    }
+}
+
+sub get_content_over_agent { # Added by Dr.Sergey Noskov ZDV University of Mainz
+    my ($ua, $url) = (@_);
+    my $response = $ua->get($url) 
+        or die 'Unable to get page '.$url;
+    die $response->status_line if !$response->is_success;
+    return $response->decoded_content( charset => 'none' );
+}
+
+sub get_file_over_agent { # Added by Dr.Sergey Noskov ZDV University of Mainz
+    my ($ua, $url, $filename) = (@_);
+    my $response = $ua->get($url, ':content_file'   => $filename) 
+        or die 'Unable to get file '.$url;
+    die $response->status_line if !$response->is_success;
+
 
 =item fasta_copy_except ($source, $dest, @accs)
 
