@@ -514,7 +514,7 @@ sub file_download {
         my $url_base = "ftp://".$server.$path;
         my $ua = LWP::UserAgent->new();
         $ua->env_proxy;
-        say "  Connecting to $server using proxy"; 
+        msg("  Connecting to $server using proxy"); 
         # get directory list as HTML
         my $dir_res = get_content_over_agent($ua, $url_base);
         # parse HTML table
