@@ -709,7 +709,7 @@ sub get_file_over_agent { # Added by Dr.Sergey Noskov ZDV University of Mainz
     my $response = $ua->get($url, ':content_file'   => $filename) 
         or die 'Unable to get file '.$url;
     die $response->status_line if !$response->is_success;
-
+}
 
 =item fasta_copy_except ($source, $dest, @accs)
 
