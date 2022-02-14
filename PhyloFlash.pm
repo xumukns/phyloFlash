@@ -547,7 +547,7 @@ sub file_download {
             if($file_to_download eq "");
         my $file_to_download_md5 = "";
         for my $row ( $table->rows ) {
-            if($file_to_download.".md5" eq @$row[1])){
+            if($file_to_download.".md5" eq @$row[1]){
                 # try downloading md5
                 $file_to_download_md5 = get_content_over_agent($ua, $url_base.$file_to_download.".md5");
                 $file_to_download_md5 =~ s/ .*//;
